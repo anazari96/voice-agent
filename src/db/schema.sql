@@ -5,6 +5,7 @@ create table public.business_info (
   description text,
   hours text,
   contact_info text,
+  greetings text,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 

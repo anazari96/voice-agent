@@ -3,13 +3,14 @@ import axios from 'axios';
 import { Container, TextField, Button, Typography, Box, Paper, Snackbar, Alert } from '@mui/material';
 
 // Assuming backend is on port 3000
-const API_URL = 'http://localhost:3000/api';
+const API_URL = 'https://voice-agent-production-0a4f.up.railway.app/api';
 
 interface BusinessInfo {
   business_name: string;
   description: string;
   hours: string;
   contact_info: string;
+  greetings: string;
 }
 
 function App() {
@@ -17,7 +18,8 @@ function App() {
     business_name: '',
     description: '',
     hours: '',
-    contact_info: ''
+    contact_info: '',
+    greetings: ''
   });
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
@@ -34,7 +36,8 @@ function App() {
           business_name: res.data.business_name,
           description: res.data.description || '',
           hours: res.data.hours || '',
-          contact_info: res.data.contact_info || ''
+          contact_info: res.data.contact_info || '',
+          greetings: res.data.greetings || ''
         });
       }
     } catch (err) {
@@ -106,6 +109,17 @@ function App() {
             value={info.contact_info}
             onChange={handleChange}
             margin="normal"
+          />
+          <TextField
+            fullWidth
+            label="Greetings (Said at the beginning of each call)"
+            name="greetings"
+            value={info.greetings}
+            onChange={handleChange}
+            margin="normal"
+            multiline
+            rows={3}
+            helperText="This greeting will be spoken automatically when a call starts."
           />
           
           <Button 

@@ -12,7 +12,7 @@ router.get('/business-info', async (req, res) => {
 });
 
 router.post('/business-info', async (req, res) => {
-  const { business_name, description, hours, contact_info } = req.body;
+  const { business_name, description, hours, contact_info, greetings } = req.body;
   
   // Check if exists
   const { data: existing } = await supabase.from('business_info').select('id').limit(1).single();
@@ -21,13 +21,13 @@ router.post('/business-info', async (req, res) => {
   if (existing) {
     result = await supabase
       .from('business_info')
-      .update({ business_name, description, hours, contact_info })
+      .update({ business_name, description, hours, contact_info, greetings })
       .eq('id', existing.id)
       .select();
   } else {
     result = await supabase
       .from('business_info')
-      .insert({ business_name, description, hours, contact_info })
+      .insert({ business_name, description, hours, contact_info, greetings })
       .select();
   }
 

@@ -17,6 +17,8 @@ export const handleStream = async (ws: WebSocket) => {
   let streamSid: string | null = null;
   let businessContext: string = '';
   let conversationHistory: { role: 'system' | 'user' | 'assistant'; content: string }[] = [];
+  let greetings: string = '';
+  let greetingSent: boolean = false;
 
   // Fetch Context
   try {
@@ -26,6 +28,7 @@ export const handleStream = async (ws: WebSocket) => {
     const businessName = businessInfo?.business_name || 'Our Business';
     const description = businessInfo?.description || '';
     const productList = products.map((p: any) => `${p.name} ($${(p.price / 100).toFixed(2)})`).join(', ');
+    greetings = businessInfo?.greetings || '';
 
     businessContext = `You are a helpful AI assistant for ${businessName}. 
     Business Description: ${description}.
@@ -50,9 +53,43 @@ export const handleStream = async (ws: WebSocket) => {
     endpointing: 300 // Wait 300ms of silence to trigger final
   });
 
+  // Function to send greetings when both stream and Deepgram are ready
+  const sendGreetingsIfReady = () => {
+    if (greetings && !greetingSent && streamSid && deepgramLive.getReadyState() === 1) {
+      greetingSent = true;
+      console.log('Sending greetings:', greetings);
+      textToSpeechStream(greetings).then((audioStream) => {
+        sendAudioToStream(audioStream);
+      }).catch((err) => {
+        console.error('Error sending greetings:', err);
+      });
+    }
+  };
+
   deepgramLive.on(LiveTranscriptionEvents.Open, () => {
     console.log('Deepgram Connected');
+    // Try to send greetings when Deepgram opens (if stream is already started)
+    sendGreetingsIfReady();
   });
+
+  // Function to send audio to Twilio stream
+  const sendAudioToStream = (audioStream: NodeJS.ReadableStream | null) => {
+    if (audioStream && streamSid) {
+      audioStream.on('data', (chunk: Buffer) => {
+        const payload = chunk.toString('base64');
+        const message = {
+          event: 'media',
+          streamSid: streamSid,
+          media: {
+            payload: payload
+          }
+        };
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify(message));
+        }
+      });
+    }
+  };
 
   deepgramLive.on(LiveTranscriptionEvents.Transcript, async (data) => {
     const transcript = data.channel.alternatives[0].transcript;
@@ -69,21 +106,7 @@ export const handleStream = async (ws: WebSocket) => {
 
       // TTS and Stream back
       const audioStream = await textToSpeechStream(aiResponse);
-      if (audioStream && streamSid) {
-        audioStream.on('data', (chunk: Buffer) => {
-          const payload = chunk.toString('base64');
-          const message = {
-            event: 'media',
-            streamSid: streamSid,
-            media: {
-              payload: payload
-            }
-          };
-          if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify(message));
-          }
-        });
-      }
+      sendAudioToStream(audioStream);
     }
   });
 
@@ -103,6 +126,8 @@ export const handleStream = async (ws: WebSocket) => {
         case 'start':
           console.log('Media Stream Started:', data.streamSid);
           streamSid = data.streamSid;
+          // Try to send greetings when stream starts (if Deepgram is already open)
+          sendGreetingsIfReady();
           break;
         case 'media':
           // Send audio to Deepgram
