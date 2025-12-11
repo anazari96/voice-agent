@@ -15,7 +15,8 @@ const server = createServer(app);
 const twiml = new twilio.twiml.VoiceResponse();
 
 // Use noServer mode to handle upgrades manually for Twilio WebSocket connections
-const wss = new WebSocket.Server({ server, path: "/streams" });
+// This prevents Express from intercepting the WebSocket upgrade request
+const wss = new WebSocketServer({ noServer: true });
 
 // Track active WebSocket connections
 const activeConnections = new Set<WebSocket>();
@@ -42,42 +43,60 @@ const buildStreamUrl = (req: express.Request): string => {
 
 /**
  * Handle WebSocket upgrade requests from Twilio
- * This must be registered before Express middleware to intercept upgrade requests
+ * This MUST be registered before the server starts listening
+ * to intercept upgrade requests before Express middleware processes them
  */
 server.on('upgrade', (request, socket, head) => {
   const url = request.url || '/';
   let pathname: string;
 
   try {
-    const parsedUrl = new URL(url, `http://${request.headers.host}`);
+    const parsedUrl = new URL(url, `http://${request.headers.host || 'localhost'}`);
     pathname = parsedUrl.pathname;
   } catch (e) {
     // Fallback for malformed URLs
     pathname = url.split('?')[0];
   }
 
-  console.log(`[WebSocket Upgrade] Path: ${pathname}, Origin: ${request.headers.origin}`);
+  console.log(`[WebSocket Upgrade] Received upgrade request`);
+  console.log(`[WebSocket Upgrade] Path: ${pathname}`);
+  console.log(`[WebSocket Upgrade] Method: ${request.method}`);
+  console.log(`[WebSocket Upgrade] Headers:`, {
+    upgrade: request.headers.upgrade,
+    connection: request.headers.connection,
+    origin: request.headers.origin,
+    'sec-websocket-key': request.headers['sec-websocket-key'] ? 'present' : 'missing',
+    'sec-websocket-version': request.headers['sec-websocket-version']
+  });
 
   // Only allow connections to /streams endpoint
   if (pathname === '/streams') {
-    wss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
-      console.log('[WebSocket] Connection established from Twilio');
-      activeConnections.add(ws);
-      
-      // Handle connection cleanup
-      ws.on('close', () => {
-        console.log('[WebSocket] Connection closed');
-        activeConnections.delete(ws);
-      });
+    console.log('[WebSocket Upgrade] Accepting upgrade for /streams');
+    try {
+      wss.handleUpgrade(request, socket, head, (ws: WebSocket) => {
+        console.log('[WebSocket] Connection successfully upgraded');
+        console.log('[WebSocket] Ready state:', ws.readyState);
+        activeConnections.add(ws);
+        
+        // Handle connection cleanup
+        ws.on('close', (code, reason) => {
+          console.log(`[WebSocket] Connection closed - Code: ${code}, Reason: ${reason.toString()}`);
+          activeConnections.delete(ws);
+        });
 
-      ws.on('error', (error) => {
-        console.error('[WebSocket] Error:', error);
-        activeConnections.delete(ws);
-      });
+        ws.on('error', (error) => {
+          console.error('[WebSocket] Connection error:', error);
+          activeConnections.delete(ws);
+        });
 
-      // Emit connection event to trigger stream handler
-      wss.emit('connection', ws, request);
-    });
+        // Emit connection event to trigger stream handler
+        wss.emit('connection', ws, request);
+      });
+    } catch (error) {
+      console.error('[WebSocket Upgrade] Error during upgrade:', error);
+      socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n');
+      socket.destroy();
+    }
   } else {
     console.log(`[WebSocket Upgrade] Rejected - Invalid path: ${pathname}`);
     socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
@@ -97,6 +116,28 @@ app.get('/', (req, res) => {
     service: 'Voice Agent Server',
     activeConnections: activeConnections.size,
     timestamp: new Date().toISOString()
+  });
+});
+
+// Handle GET requests to /streams (for debugging/monitoring)
+// Note: WebSocket upgrade requests are handled by server.on('upgrade') above
+// This only handles plain HTTP GET requests
+app.get('/streams', (req, res) => {
+  // Check if this is actually a WebSocket upgrade request
+  // (it shouldn't be, as those are handled by the upgrade handler)
+  if (req.headers.upgrade === 'websocket') {
+    // This shouldn't happen, but if it does, let the upgrade handler deal with it
+    // by not sending a response here
+    return;
+  }
+  
+  // Plain GET request - return status info
+  res.json({
+    endpoint: '/streams',
+    type: 'WebSocket',
+    status: 'ready',
+    activeConnections: activeConnections.size,
+    note: 'This endpoint accepts WebSocket connections. Use ws:// or wss:// protocol to connect.'
   });
 });
 
