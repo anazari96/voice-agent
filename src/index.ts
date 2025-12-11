@@ -128,17 +128,14 @@ app.get('/', (req, res) => {
   });
 });
 
-// Handle GET requests to /streams (for debugging/monitoring)
-// Note: WebSocket upgrade requests are handled by server.on('upgrade') above
-// and are filtered out by the early middleware check
-app.get('/streams', (req, res) => {
-  // Plain GET request - return status info
+// WebSocket status endpoint (use different path to avoid conflict with /streams WebSocket)
+app.get('/streams-status', (req, res) => {
   res.json({
     endpoint: '/streams',
     type: 'WebSocket',
     status: 'ready',
     activeConnections: activeConnections.size,
-    note: 'This endpoint accepts WebSocket connections. Use ws:// or wss:// protocol to connect.'
+    note: 'WebSocket endpoint is at /streams. Use ws:// or wss:// protocol to connect.'
   });
 });
 
