@@ -9,13 +9,69 @@ const openai = new OpenAI({
 
 export const getAIResponse = async (
   conversationHistory: { role: 'system' | 'user' | 'assistant'; content: string }[],
-  userMessage: string
+  userMessage: string,
+  detectedLanguage: string | null = null
 ) => {
   try {
-    const messages = [
-      ...conversationHistory,
-      { role: 'user', content: userMessage } as const
-    ];
+    // Create messages array with language instruction if language is detected
+    const messages = [...conversationHistory];
+    
+    // If a language is detected and it's not English, add instruction to respond in that language
+    if (detectedLanguage && detectedLanguage !== 'en' && detectedLanguage !== 'en-US') {
+      // Map common language codes to language names for better instructions
+      const languageNames: { [key: string]: string } = {
+        'es': 'Spanish',
+        'fr': 'French',
+        'de': 'German',
+        'it': 'Italian',
+        'pt': 'Portuguese',
+        'zh': 'Chinese',
+        'ja': 'Japanese',
+        'ko': 'Korean',
+        'ru': 'Russian',
+        'ar': 'Arabic',
+        'hi': 'Hindi',
+        'nl': 'Dutch',
+        'pl': 'Polish',
+        'tr': 'Turkish',
+        'sv': 'Swedish',
+        'da': 'Danish',
+        'fi': 'Finnish',
+        'no': 'Norwegian',
+        'cs': 'Czech',
+        'ro': 'Romanian',
+        'el': 'Greek',
+        'hu': 'Hungarian',
+        'vi': 'Vietnamese',
+        'th': 'Thai',
+        'id': 'Indonesian',
+        'ms': 'Malay',
+        'uk': 'Ukrainian',
+        'he': 'Hebrew',
+        'sk': 'Slovak',
+        'hr': 'Croatian',
+        'bg': 'Bulgarian',
+        'ta': 'Tamil',
+        'fil': 'Filipino'
+      };
+      
+      const languageName = languageNames[detectedLanguage] || detectedLanguage;
+      const languageInstruction = `IMPORTANT: The user is speaking in ${languageName}. Please respond ONLY in ${languageName}. Do not switch to English or any other language.`;
+      
+      // Add language instruction as a system message if not already present, or append to existing system message
+      const systemMessageIndex = messages.findIndex(msg => msg.role === 'system');
+      if (systemMessageIndex >= 0) {
+        messages[systemMessageIndex] = {
+          ...messages[systemMessageIndex],
+          content: `${messages[systemMessageIndex].content}\n\n${languageInstruction}`
+        };
+      } else {
+        messages.unshift({ role: 'system', content: languageInstruction });
+      }
+    }
+    
+    // Add the user message
+    messages.push({ role: 'user', content: userMessage } as const);
 
     const completion = await openai.chat.completions.create({
       model: 'gpt-4o', // or gpt-3.5-turbo

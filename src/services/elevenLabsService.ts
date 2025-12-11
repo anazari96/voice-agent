@@ -69,7 +69,7 @@ export const validateElevenLabsApiKey = async (): Promise<boolean> => {
   }
 };
 
-export const textToSpeechStream = async (text: string): Promise<NodeJS.ReadableStream | null> => {
+export const textToSpeechStream = async (text: string, languageCode: string | null = null): Promise<NodeJS.ReadableStream | null> => {
   if (!ELEVENLABS_API_KEY) {
     console.error('[ElevenLabs] API Key is missing. Please set ELEVENLABS_API_KEY in your .env file.');
     return null;
@@ -109,6 +109,29 @@ export const textToSpeechStream = async (text: string): Promise<NodeJS.ReadableS
       console.warn('[ElevenLabs] API key validation check failed, but continuing with TTS request:', authError.message);
     }
 
+    // Use multilingual model if language is detected and not English
+    // eleven_multilingual_v2 supports 29 languages, eleven_flash_v2.5 supports 32 languages
+    const useMultilingual = languageCode && languageCode !== 'en' && languageCode !== 'en-US';
+    const modelId = useMultilingual ? 'eleven_multilingual_v2' : 'eleven_turbo_v2';
+    
+    // Prepare request data
+    const requestData: any = {
+      text,
+      model_id: modelId,
+      voice_settings: {
+        stability: 0.5,
+        similarity_boost: 0.75
+      }
+    };
+    
+    // Add language_code if provided and using multilingual model
+    if (useMultilingual && languageCode) {
+      // Convert BCP-47 code to ISO 639-1 if needed (e.g., 'en-US' -> 'en')
+      const iso639Code = languageCode.split('-')[0];
+      requestData.language_code = iso639Code;
+      console.log('[ElevenLabs] Using language code:', iso639Code, 'with model:', modelId);
+    }
+
     // Now make the actual TTS stream request
     const response = await axios({
       method: 'POST',
@@ -116,14 +139,7 @@ export const textToSpeechStream = async (text: string): Promise<NodeJS.ReadableS
       params: {
         output_format: 'ulaw_8000' // μ-law 8kHz for Twilio (query param)
       },
-      data: {
-        text,
-        model_id: 'eleven_turbo_v2', // Faster for realtime
-        voice_settings: {
-          stability: 0.5,
-          similarity_boost: 0.75
-        }
-      },
+      data: requestData,
       headers: {
         'xi-api-key': ELEVENLABS_API_KEY,
         'Content-Type': 'application/json'

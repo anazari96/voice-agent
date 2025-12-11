@@ -21,17 +21,42 @@ export const handleStream = (ws: WebSocket) => {
   let greetings: string = '';
   let greetingSent: boolean = false;
   let contextLoaded: boolean = false;
+  let detectedLanguage: string | null = null; // Store detected language (BCP-47 code, e.g., 'en', 'es', 'fr')
+  let isAgentSpeaking: boolean = false; // Track if agent is currently speaking
+  let currentAudioStream: NodeJS.ReadableStream | null = null; // Reference to current audio stream for interruption
 
-  // Deepgram Live Client - initialize immediately
+  // Deepgram Live Client - initialize immediately with language detection
   const deepgramLive = deepgram.listen.live({
     model: 'nova-2',
-    language: 'en-US',
+    detect_language: true, // Enable automatic language detection
     smart_format: true,
     encoding: 'mulaw',
     sample_rate: 8000,
     channels: 1,
     endpointing: 300 // Wait 300ms of silence to trigger final
   });
+
+  // Function to stop current audio stream (for interruption)
+  const stopCurrentAudio = () => {
+    if (currentAudioStream && isAgentSpeaking) {
+      console.log('[Interruption] Stopping current audio stream');
+      try {
+        // Destroy the stream to stop it immediately
+        if (typeof (currentAudioStream as any).destroy === 'function') {
+          (currentAudioStream as any).destroy();
+        } else if (typeof (currentAudioStream as any).abort === 'function') {
+          (currentAudioStream as any).abort();
+        }
+        currentAudioStream = null;
+        isAgentSpeaking = false;
+        console.log('[Interruption] Audio stream stopped successfully');
+      } catch (err) {
+        console.error('[Interruption] Error stopping audio stream:', err);
+        currentAudioStream = null;
+        isAgentSpeaking = false;
+      }
+    }
+  };
 
   // Function to send audio to Twilio stream
   const sendAudioToStream = (audioStream: NodeJS.ReadableStream | null) => {
@@ -45,11 +70,27 @@ export const handleStream = (ws: WebSocket) => {
       return;
     }
 
+    // Stop any currently playing audio (interruption handling)
+    if (isAgentSpeaking && currentAudioStream) {
+      console.log('[Audio] Stopping previous audio stream before starting new one');
+      stopCurrentAudio();
+    }
+
+    // Set speaking state and store stream reference
+    isAgentSpeaking = true;
+    currentAudioStream = audioStream;
+
     console.log('[Audio] Starting to send audio to Twilio, streamSid:', streamSid);
     let chunkCount = 0;
     let totalBytes = 0;
 
     audioStream.on('data', (chunk: Buffer) => {
+      // Check if stream was interrupted (destroyed)
+      if (!isAgentSpeaking || !currentAudioStream) {
+        console.log('[Audio] Stream interrupted, stopping data transmission');
+        return;
+      }
+
       chunkCount++;
       totalBytes += chunk.length;
       
@@ -72,22 +113,45 @@ export const handleStream = (ws: WebSocket) => {
     audioStream.on('end', () => {
       console.log(`[Audio] Stream complete - sent ${chunkCount} chunks, ${totalBytes} bytes total`);
       
-      // Send a mark event to track when audio playback completes
-      if (ws.readyState === WebSocket.OPEN && streamSid) {
-        const markMessage = {
-          event: 'mark',
-          streamSid: streamSid,
-          mark: {
-            name: `audio_complete_${Date.now()}`
-          }
-        };
-        ws.send(JSON.stringify(markMessage));
-        console.log('[Audio] Mark event sent');
+      // Only send mark event if this is still the current stream
+      if (currentAudioStream === audioStream && isAgentSpeaking) {
+        // Send a mark event to track when audio playback completes
+        if (ws.readyState === WebSocket.OPEN && streamSid) {
+          const markMessage = {
+            event: 'mark',
+            streamSid: streamSid,
+            mark: {
+              name: `audio_complete_${Date.now()}`
+            }
+          };
+          ws.send(JSON.stringify(markMessage));
+          console.log('[Audio] Mark event sent');
+        }
+      }
+      
+      // Reset speaking state if this was the current stream
+      if (currentAudioStream === audioStream) {
+        isAgentSpeaking = false;
+        currentAudioStream = null;
       }
     });
 
     audioStream.on('error', (err) => {
       console.error('[Audio] Stream error:', err);
+      // Reset speaking state on error
+      if (currentAudioStream === audioStream) {
+        isAgentSpeaking = false;
+        currentAudioStream = null;
+      }
+    });
+
+    // Handle stream close/destroy events
+    audioStream.on('close', () => {
+      console.log('[Audio] Stream closed');
+      if (currentAudioStream === audioStream) {
+        isAgentSpeaking = false;
+        currentAudioStream = null;
+      }
     });
   };
 
@@ -103,7 +167,8 @@ export const handleStream = (ws: WebSocket) => {
       setTimeout(async () => {
         console.log('[Greetings] Sending greetings:', greetings);
         try {
-          const audioStream = await textToSpeechStream(greetings);
+          // For greetings, use default language (null) or detected language if available
+          const audioStream = await textToSpeechStream(greetings, detectedLanguage);
           if (audioStream) {
             console.log('[Greetings] Audio stream received, sending to Twilio');
             sendAudioToStream(audioStream);
@@ -184,18 +249,31 @@ export const handleStream = (ws: WebSocket) => {
   deepgramLive.on(LiveTranscriptionEvents.Transcript, async (data) => {
     const transcript = data.channel.alternatives[0].transcript;
     if (transcript && data.is_final) {
+      // Extract detected language from Deepgram response
+      const detectedLang = data.channel?.detected_language || data.metadata?.detected_language || null;
+      if (detectedLang) {
+        detectedLanguage = detectedLang;
+        console.log('[Language] Detected language:', detectedLanguage);
+      }
+      
       console.log('[User] Said:', transcript);
+      
+      // Check if agent is currently speaking (interruption detection)
+      if (isAgentSpeaking) {
+        console.log('[Interruption] User interrupted agent while speaking');
+        stopCurrentAudio();
+      }
       
       // Add to history
       conversationHistory.push({ role: 'user', content: transcript });
 
-      // Get AI Response
-      const aiResponse = await getAIResponse(conversationHistory, transcript);
+      // Get AI Response (pass detected language to respond in same language)
+      const aiResponse = await getAIResponse(conversationHistory, transcript, detectedLanguage);
       console.log('[AI] Response:', aiResponse);
       conversationHistory.push({ role: 'assistant', content: aiResponse });
 
-      // TTS and Stream back
-      const audioStream = await textToSpeechStream(aiResponse);
+      // TTS and Stream back (pass detected language for proper pronunciation)
+      const audioStream = await textToSpeechStream(aiResponse, detectedLanguage);
       sendAudioToStream(audioStream);
     }
   });
