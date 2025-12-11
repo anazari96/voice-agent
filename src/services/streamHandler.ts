@@ -53,16 +53,29 @@ export const handleStream = async (ws: WebSocket) => {
     endpointing: 300 // Wait 300ms of silence to trigger final
   });
 
-  // Function to send greetings when both stream and Deepgram are ready
+  // Function to send greetings when stream is ready
   const sendGreetingsIfReady = () => {
-    if (greetings && !greetingSent && streamSid && deepgramLive.getReadyState() === 1) {
+    console.log('[Greetings] Check - greetings:', !!greetings, 'greetingSent:', greetingSent, 'streamSid:', !!streamSid, 'deepgramState:', deepgramLive.getReadyState());
+    
+    // Only need streamSid to send greetings - don't wait for Deepgram
+    if (greetings && !greetingSent && streamSid) {
       greetingSent = true;
-      console.log('Sending greetings:', greetings);
-      textToSpeechStream(greetings).then((audioStream) => {
-        sendAudioToStream(audioStream);
-      }).catch((err) => {
-        console.error('Error sending greetings:', err);
-      });
+      
+      // Small delay to ensure Twilio is ready to receive audio
+      setTimeout(async () => {
+        console.log('[Greetings] Sending greetings:', greetings);
+        try {
+          const audioStream = await textToSpeechStream(greetings);
+          if (audioStream) {
+            console.log('[Greetings] Audio stream received, sending to Twilio');
+            sendAudioToStream(audioStream);
+          } else {
+            console.error('[Greetings] Failed to get audio stream from ElevenLabs');
+          }
+        } catch (err) {
+          console.error('[Greetings] Error sending greetings:', err);
+        }
+      }, 500); // 500ms delay to let Twilio stream fully initialize
     }
   };
 
@@ -74,21 +87,60 @@ export const handleStream = async (ws: WebSocket) => {
 
   // Function to send audio to Twilio stream
   const sendAudioToStream = (audioStream: NodeJS.ReadableStream | null) => {
-    if (audioStream && streamSid) {
-      audioStream.on('data', (chunk: Buffer) => {
-        const payload = chunk.toString('base64');
-        const message = {
-          event: 'media',
+    if (!audioStream) {
+      console.error('[Audio] No audio stream to send');
+      return;
+    }
+    
+    if (!streamSid) {
+      console.error('[Audio] No streamSid available - cannot send audio');
+      return;
+    }
+
+    console.log('[Audio] Starting to send audio to Twilio, streamSid:', streamSid);
+    let chunkCount = 0;
+    let totalBytes = 0;
+
+    audioStream.on('data', (chunk: Buffer) => {
+      chunkCount++;
+      totalBytes += chunk.length;
+      
+      const payload = chunk.toString('base64');
+      const message = {
+        event: 'media',
+        streamSid: streamSid,
+        media: {
+          payload: payload
+        }
+      };
+      
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(message));
+      } else {
+        console.error('[Audio] WebSocket not open, state:', ws.readyState);
+      }
+    });
+
+    audioStream.on('end', () => {
+      console.log(`[Audio] Stream complete - sent ${chunkCount} chunks, ${totalBytes} bytes total`);
+      
+      // Send a mark event to track when audio playback completes
+      if (ws.readyState === WebSocket.OPEN && streamSid) {
+        const markMessage = {
+          event: 'mark',
           streamSid: streamSid,
-          media: {
-            payload: payload
+          mark: {
+            name: `audio_complete_${Date.now()}`
           }
         };
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify(message));
-        }
-      });
-    }
+        ws.send(JSON.stringify(markMessage));
+        console.log('[Audio] Mark event sent');
+      }
+    });
+
+    audioStream.on('error', (err) => {
+      console.error('[Audio] Stream error:', err);
+    });
   };
 
   deepgramLive.on(LiveTranscriptionEvents.Transcript, async (data) => {
@@ -136,9 +188,12 @@ export const handleStream = async (ws: WebSocket) => {
              deepgramLive.send(payload as any);
           }
           break;
+        case 'mark':
+          console.log('[Twilio] Mark received:', data.mark?.name);
+          break;
         case 'stop':
           console.log('Media Stream Stopped');
-          deepgramLive.finish();
+          deepgramLive.requestClose();
           break;
       }
     } catch (e) {
@@ -148,7 +203,7 @@ export const handleStream = async (ws: WebSocket) => {
 
   ws.on('close', () => {
     console.log('Twilio Stream Connection Closed');
-    deepgramLive.finish();
+    deepgramLive.requestClose();
   });
 };
 

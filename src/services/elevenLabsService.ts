@@ -12,10 +12,15 @@ export const textToSpeechStream = async (text: string): Promise<NodeJS.ReadableS
     return null;
   }
 
+  console.log('[ElevenLabs] Generating TTS for:', text.substring(0, 50) + '...');
+
   try {
     const response = await axios({
       method: 'POST',
-      url: `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream?output_format=ulaw_8000`,
+      url: `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream`,
+      params: {
+        output_format: 'ulaw_8000' // μ-law 8kHz for Twilio (query param)
+      },
       data: {
         text,
         model_id: 'eleven_turbo_v2', // Faster for realtime
@@ -25,16 +30,18 @@ export const textToSpeechStream = async (text: string): Promise<NodeJS.ReadableS
         }
       },
       headers: {
-        'Accept': 'audio/mpeg',
         'xi-api-key': ELEVENLABS_API_KEY,
         'Content-Type': 'application/json'
       },
       responseType: 'stream'
     });
 
+    console.log('[ElevenLabs] TTS stream started successfully');
+    console.log('[ElevenLabs] Response status:', response.status);
+    console.log('[ElevenLabs] Response content-type:', response.headers['content-type']);
     return response.data;
-  } catch (error) {
-    console.error('Error generating speech with ElevenLabs:', error);
+  } catch (error: any) {
+    console.error('[ElevenLabs] Error generating speech:', error.response?.status, error.response?.data || error.message);
     return null;
   }
 };
