@@ -4,6 +4,7 @@ import { supabase } from './supabaseClient';
 import { getProducts } from './cloverService';
 import { getAIResponse } from './openaiService';
 import { textToSpeechStream } from './elevenLabsService';
+import { franc } from 'franc';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -25,10 +26,46 @@ export const handleStream = (ws: WebSocket) => {
   let isAgentSpeaking: boolean = false; // Track if agent is currently speaking
   let currentAudioStream: NodeJS.ReadableStream | null = null; // Reference to current audio stream for interruption
 
-  // Deepgram Live Client - initialize immediately with language detection
+  // Function to convert ISO 639-3 language code (from franc) to ISO 639-1 (for APIs)
+  const convertToISO6391 = (code6393: string): string | null => {
+    // Map of common ISO 639-3 to ISO 639-1 codes
+    const langMap: { [key: string]: string } = {
+      'eng': 'en', 'spa': 'es', 'fra': 'fr', 'deu': 'de', 'ita': 'it',
+      'por': 'pt', 'zho': 'zh', 'jpn': 'ja', 'kor': 'ko', 'rus': 'ru',
+      'ara': 'ar', 'hin': 'hi', 'nld': 'nl', 'pol': 'pl', 'tur': 'tr',
+      'swe': 'sv', 'dan': 'da', 'fin': 'fi', 'nor': 'no', 'ces': 'cs',
+      'ron': 'ro', 'ell': 'el', 'hun': 'hu', 'vie': 'vi', 'tha': 'th',
+      'ind': 'id', 'msa': 'ms', 'ukr': 'uk', 'heb': 'he', 'slk': 'sk',
+      'hrv': 'hr', 'bul': 'bg', 'tam': 'ta', 'fil': 'fil'
+    };
+    return langMap[code6393] || null;
+  };
+
+  // Function to detect language from text
+  const detectLanguageFromText = (text: string): string | null => {
+    try {
+      // franc returns ISO 639-3 codes (e.g., 'eng', 'spa', 'fra')
+      const detectedCode6393 = franc(text);
+      
+      if (!detectedCode6393 || detectedCode6393 === 'und') {
+        // 'und' means undetermined
+        return null;
+      }
+      
+      // Convert to ISO 639-1 for API compatibility
+      const code6391 = convertToISO6391(detectedCode6393);
+      console.log('[Language] Detected from text:', detectedCode6393, '->', code6391);
+      return code6391;
+    } catch (err) {
+      console.error('[Language] Error detecting language:', err);
+      return null;
+    }
+  };
+
+  // Deepgram Live Client - initialize immediately
+  // Note: detect_language is not supported for live streaming, so we use text-based detection
   const deepgramLive = deepgram.listen.live({
-    model: 'nova-2',
-    detect_language: true, // Enable automatic language detection
+    model: 'nova-2', // Nova-2 is multilingual and supports many languages
     smart_format: true,
     encoding: 'mulaw',
     sample_rate: 8000,
@@ -167,6 +204,7 @@ export const handleStream = (ws: WebSocket) => {
       setTimeout(async () => {
         console.log('[Greetings] Sending greetings:', greetings);
         try {
+          conversationHistory.push({role: "assistant", content: greetings});
           // For greetings, use default language (null) or detected language if available
           const audioStream = await textToSpeechStream(greetings, detectedLanguage);
           if (audioStream) {
@@ -249,14 +287,15 @@ export const handleStream = (ws: WebSocket) => {
   deepgramLive.on(LiveTranscriptionEvents.Transcript, async (data) => {
     const transcript = data.channel.alternatives[0].transcript;
     if (transcript && data.is_final) {
-      // Extract detected language from Deepgram response
-      const detectedLang = data.channel?.detected_language || data.metadata?.detected_language || null;
+      console.log('[User] Said:', transcript);
+      
+      // Detect language from transcript text (since detect_language is not supported for live streaming)
+      const detectedLang = detectLanguageFromText(transcript);
       if (detectedLang) {
+        // Only update if we got a valid detection (don't overwrite with null)
         detectedLanguage = detectedLang;
         console.log('[Language] Detected language:', detectedLanguage);
       }
-      
-      console.log('[User] Said:', transcript);
       
       // Check if agent is currently speaking (interruption detection)
       if (isAgentSpeaking) {
