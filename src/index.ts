@@ -15,7 +15,7 @@ const server = createServer(app);
 const twiml = new twilio.twiml.VoiceResponse();
 
 // Use noServer mode to handle upgrades manually for Twilio WebSocket connections
-const wss = new WebSocket.Server({ server, path: "/stream" });
+const wss = new WebSocket.Server({ server, path: "/streams" });
 
 // Track active WebSocket connections
 const activeConnections = new Set<WebSocket>();
