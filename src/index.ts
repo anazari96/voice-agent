@@ -160,14 +160,12 @@ app.post('/voice', (req, res) => {
     const streamUrl = buildStreamUrl(req);
     console.log('[Voice Webhook] Stream URL:', streamUrl);
 
-    // Connect call to WebSocket stream with bidirectional audio
-    const connect = response.connect();
-    const stream = connect.stream({ url: streamUrl });
+    // Connect call to WebSocket stream
+    // Bidirectional streaming is enabled by default when you send media events back
+    response.connect().stream({ url: streamUrl });
     
-    // Enable bidirectional streaming - 'both_tracks' allows sending audio back to caller
-    stream.parameter({ name: 'track', value: 'both_tracks' });
-    
-    console.log('[Voice Webhook] TwiML:', response.toString());
+    const twimlString = response.toString();
+    console.log('[Voice Webhook] TwiML Response:\n', twimlString);
 
     // Set response headers
     res.type('text/xml');
@@ -221,6 +219,35 @@ const shutdown = () => {
 
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
+
+// Validate environment variables on startup
+const requiredEnvVars = {
+  ELEVENLABS_API_KEY: process.env.ELEVENLABS_API_KEY,
+  DEEPGRAM_API_KEY: process.env.DEEPGRAM_API_KEY,
+  OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+};
+
+console.log('[Server] Validating environment variables...');
+let hasErrors = false;
+
+for (const [key, value] of Object.entries(requiredEnvVars)) {
+  if (!value) {
+    console.error(`[Server] ❌ Missing required environment variable: ${key}`);
+    hasErrors = true;
+  } else {
+    // Mask the API key for security (show first 8 chars and last 4)
+    const masked = value.length > 12 
+      ? `${value.substring(0, 8)}...${value.substring(value.length - 4)}`
+      : '***';
+    console.log(`[Server] ✓ ${key}: ${masked}`);
+  }
+}
+
+if (hasErrors) {
+  console.error('[Server] ⚠️  Some required environment variables are missing.');
+  console.error('[Server] Please check your .env file and ensure all API keys are set.');
+  console.error('[Server] Server will start, but features requiring missing keys will fail.');
+}
 
 // Start server
 const PORT = process.env.PORT || 3000;

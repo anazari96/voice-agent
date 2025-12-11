@@ -10,39 +10,19 @@ dotenv.config();
 
 const deepgram = createClient(process.env.DEEPGRAM_API_KEY || '');
 
-export const handleStream = async (ws: WebSocket) => {
-  console.log('New Stream Connection');
+export const handleStream = (ws: WebSocket) => {
+  console.log('[Stream] New Stream Connection');
+  console.log('[Stream] WebSocket readyState:', ws.readyState);
 
-  // State
+  // State - must be initialized BEFORE any async operations
   let streamSid: string | null = null;
   let businessContext: string = '';
   let conversationHistory: { role: 'system' | 'user' | 'assistant'; content: string }[] = [];
   let greetings: string = '';
   let greetingSent: boolean = false;
+  let contextLoaded: boolean = false;
 
-  // Fetch Context
-  try {
-    const { data: businessInfo } = await supabase.from('business_info').select('*').limit(1).single();
-    const products = await getProducts();
-    
-    const businessName = businessInfo?.business_name || 'Our Business';
-    const description = businessInfo?.description || '';
-    const productList = products.map((p: any) => `${p.name} ($${(p.price / 100).toFixed(2)})`).join(', ');
-    greetings = businessInfo?.greetings || '';
-
-    businessContext = `You are a helpful AI assistant for ${businessName}. 
-    Business Description: ${description}.
-    Available Products: ${productList}.
-    Keep responses concise and conversational.`;
-    
-    conversationHistory.push({ role: 'system', content: businessContext });
-    console.log('Context loaded for stream.');
-  } catch (err) {
-    console.error('Error loading context:', err);
-    conversationHistory.push({ role: 'system', content: 'You are a helpful assistant.' });
-  }
-
-  // Deepgram Live Client
+  // Deepgram Live Client - initialize immediately
   const deepgramLive = deepgram.listen.live({
     model: 'nova-2',
     language: 'en-US',
@@ -51,38 +31,6 @@ export const handleStream = async (ws: WebSocket) => {
     sample_rate: 8000,
     channels: 1,
     endpointing: 300 // Wait 300ms of silence to trigger final
-  });
-
-  // Function to send greetings when stream is ready
-  const sendGreetingsIfReady = () => {
-    console.log('[Greetings] Check - greetings:', !!greetings, 'greetingSent:', greetingSent, 'streamSid:', !!streamSid, 'deepgramState:', deepgramLive.getReadyState());
-    
-    // Only need streamSid to send greetings - don't wait for Deepgram
-    if (greetings && !greetingSent && streamSid) {
-      greetingSent = true;
-      
-      // Small delay to ensure Twilio is ready to receive audio
-      setTimeout(async () => {
-        console.log('[Greetings] Sending greetings:', greetings);
-        try {
-          const audioStream = await textToSpeechStream(greetings);
-          if (audioStream) {
-            console.log('[Greetings] Audio stream received, sending to Twilio');
-            sendAudioToStream(audioStream);
-          } else {
-            console.error('[Greetings] Failed to get audio stream from ElevenLabs');
-          }
-        } catch (err) {
-          console.error('[Greetings] Error sending greetings:', err);
-        }
-      }, 500); // 500ms delay to let Twilio stream fully initialize
-    }
-  };
-
-  deepgramLive.on(LiveTranscriptionEvents.Open, () => {
-    console.log('Deepgram Connected');
-    // Try to send greetings when Deepgram opens (if stream is already started)
-    sendGreetingsIfReady();
   });
 
   // Function to send audio to Twilio stream
@@ -143,38 +91,47 @@ export const handleStream = async (ws: WebSocket) => {
     });
   };
 
-  deepgramLive.on(LiveTranscriptionEvents.Transcript, async (data) => {
-    const transcript = data.channel.alternatives[0].transcript;
-    if (transcript && data.is_final) {
-      console.log('User said:', transcript);
+  // Function to send greetings when stream is ready
+  const sendGreetingsIfReady = () => {
+    console.log('[Greetings] Check - greetings:', !!greetings, 'greetingSent:', greetingSent, 'streamSid:', !!streamSid, 'contextLoaded:', contextLoaded);
+    
+    // Need streamSid AND context to be loaded
+    if (greetings && !greetingSent && streamSid && contextLoaded) {
+      greetingSent = true;
       
-      // Add to history
-      conversationHistory.push({ role: 'user', content: transcript });
-
-      // Get AI Response
-      const aiResponse = await getAIResponse(conversationHistory, transcript);
-      console.log('AI response:', aiResponse);
-      conversationHistory.push({ role: 'assistant', content: aiResponse });
-
-      // TTS and Stream back
-      const audioStream = await textToSpeechStream(aiResponse);
-      sendAudioToStream(audioStream);
+      // Small delay to ensure Twilio is ready to receive audio
+      setTimeout(async () => {
+        console.log('[Greetings] Sending greetings:', greetings);
+        try {
+          const audioStream = await textToSpeechStream(greetings);
+          if (audioStream) {
+            console.log('[Greetings] Audio stream received, sending to Twilio');
+            sendAudioToStream(audioStream);
+          } else {
+            console.error('[Greetings] Failed to get audio stream from ElevenLabs');
+          }
+        } catch (err) {
+          console.error('[Greetings] Error sending greetings:', err);
+        }
+      }, 500); // 500ms delay to let Twilio stream fully initialize
     }
-  });
+  };
 
-  deepgramLive.on(LiveTranscriptionEvents.Error, (err) => {
-    console.error('Deepgram error:', err);
-  });
-
-  // Handle WS messages from Twilio
-  ws.on('message', (message: string) => {
+  // IMMEDIATELY attach WebSocket message handler (before any async operations!)
+  ws.on('message', (message: Buffer | string) => {
     try {
-      const msg = message.toString(); // Ensure it's a string
+      const msg = message.toString();
+      
+      // Log raw message for debugging (first 500 chars for non-media)
+      if (!msg.includes('"event":"media"')) {
+        console.log('[Twilio RAW] Message received:', msg.substring(0, 500));
+      }
+      
       const data = JSON.parse(msg);
       
       // Log all events for debugging
       if (data.event !== 'media') {
-        console.log('[Twilio] Received event:', data.event, JSON.stringify(data, null, 2));
+        console.log('[Twilio] Parsed event:', data.event);
       }
       
       switch (data.event) {
@@ -185,7 +142,7 @@ export const handleStream = async (ws: WebSocket) => {
           console.log('[Twilio] Media Stream Started:', data.streamSid);
           console.log('[Twilio] Start payload:', JSON.stringify(data.start, null, 2));
           streamSid = data.streamSid;
-          // Try to send greetings when stream starts (if Deepgram is already open)
+          // Try to send greetings when stream starts
           sendGreetingsIfReady();
           break;
         case 'media':
@@ -199,18 +156,84 @@ export const handleStream = async (ws: WebSocket) => {
           console.log('[Twilio] Mark received:', data.mark?.name);
           break;
         case 'stop':
-          console.log('Media Stream Stopped');
+          console.log('[Twilio] Media Stream Stopped');
           deepgramLive.requestClose();
           break;
       }
     } catch (e) {
-      console.error('Error parsing message:', e);
+      console.error('[Twilio] Error parsing message:', e);
     }
   });
 
   ws.on('close', () => {
-    console.log('Twilio Stream Connection Closed');
+    console.log('[Twilio] Stream Connection Closed');
     deepgramLive.requestClose();
   });
+
+  ws.on('error', (err) => {
+    console.error('[Twilio] WebSocket error:', err);
+  });
+
+  // Deepgram event handlers
+  deepgramLive.on(LiveTranscriptionEvents.Open, () => {
+    console.log('[Deepgram] Connected');
+    // Try to send greetings when Deepgram opens
+    sendGreetingsIfReady();
+  });
+
+  deepgramLive.on(LiveTranscriptionEvents.Transcript, async (data) => {
+    const transcript = data.channel.alternatives[0].transcript;
+    if (transcript && data.is_final) {
+      console.log('[User] Said:', transcript);
+      
+      // Add to history
+      conversationHistory.push({ role: 'user', content: transcript });
+
+      // Get AI Response
+      const aiResponse = await getAIResponse(conversationHistory, transcript);
+      console.log('[AI] Response:', aiResponse);
+      conversationHistory.push({ role: 'assistant', content: aiResponse });
+
+      // TTS and Stream back
+      const audioStream = await textToSpeechStream(aiResponse);
+      sendAudioToStream(audioStream);
+    }
+  });
+
+  deepgramLive.on(LiveTranscriptionEvents.Error, (err) => {
+    console.error('[Deepgram] Error:', err);
+  });
+
+  // NOW fetch context asynchronously (after handlers are attached)
+  (async () => {
+    try {
+      console.log('[Context] Loading business context...');
+      const { data: businessInfo } = await supabase.from('business_info').select('*').limit(1).single();
+      const products = await getProducts();
+      
+      const businessName = businessInfo?.business_name || 'Our Business';
+      const description = businessInfo?.description || '';
+      const productList = products.map((p: any) => `${p.name} ($${(p.price / 100).toFixed(2)})`).join(', ');
+      greetings = businessInfo?.greetings || '';
+
+      businessContext = `You are a helpful AI assistant for ${businessName}. 
+      Business Description: ${description}.
+      Available Products: ${productList}.
+      Keep responses concise and conversational.`;
+      
+      conversationHistory.push({ role: 'system', content: businessContext });
+      contextLoaded = true;
+      console.log('[Context] Loaded successfully. Greetings:', greetings || '(none)');
+      
+      // Try to send greetings now that context is loaded
+      sendGreetingsIfReady();
+    } catch (err) {
+      console.error('[Context] Error loading:', err);
+      conversationHistory.push({ role: 'system', content: 'You are a helpful assistant.' });
+      contextLoaded = true;
+      // Still try to send greetings even with default context
+      sendGreetingsIfReady();
+    }
+  })();
 };
 
