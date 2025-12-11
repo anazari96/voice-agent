@@ -160,7 +160,8 @@ export const textToSpeechStream = async (text: string): Promise<NodeJS.ReadableS
                 console.error('[ElevenLabs] Error response:', errorMessage);
               } catch (streamError) {
                 console.error('[ElevenLabs] Could not read error stream. The response may be compressed.');
-                console.error('[ElevenLabs] Stream error:', streamError.message || streamError);
+                const errorMessage = streamError instanceof Error ? streamError.message : String(streamError);
+                console.error('[ElevenLabs] Stream error:', errorMessage);
               }
             } else if (typeof error.response.data === 'string') {
               console.error('[ElevenLabs] Error response:', error.response.data);
