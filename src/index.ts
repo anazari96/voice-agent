@@ -7,6 +7,7 @@ import dotenv from 'dotenv';
 import twilio from 'twilio';
 import dashboardRoutes from './routes/dashboardRoutes';
 import { handleStream } from './services/streamHandler';
+import { validateElevenLabsApiKey } from './services/elevenLabsService';
 
 dotenv.config();
 
@@ -247,6 +248,14 @@ if (hasErrors) {
   console.error('[Server] ⚠️  Some required environment variables are missing.');
   console.error('[Server] Please check your .env file and ensure all API keys are set.');
   console.error('[Server] Server will start, but features requiring missing keys will fail.');
+}
+
+// Validate ElevenLabs API key on startup
+if (requiredEnvVars.ELEVENLABS_API_KEY) {
+  console.log('[Server] Validating ElevenLabs API key...');
+  validateElevenLabsApiKey().catch((err) => {
+    console.error('[Server] Error during API key validation:', err);
+  });
 }
 
 // Start server
