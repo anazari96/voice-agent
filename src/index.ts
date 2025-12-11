@@ -160,9 +160,14 @@ app.post('/voice', (req, res) => {
     const streamUrl = buildStreamUrl(req);
     console.log('[Voice Webhook] Stream URL:', streamUrl);
 
-    // Connect call to WebSocket stream
+    // Connect call to WebSocket stream with bidirectional audio
     const connect = response.connect();
-    connect.stream({ url: streamUrl });
+    const stream = connect.stream({ url: streamUrl });
+    
+    // Enable bidirectional streaming - 'both_tracks' allows sending audio back to caller
+    stream.parameter({ name: 'track', value: 'both_tracks' });
+    
+    console.log('[Voice Webhook] TwiML:', response.toString());
 
     // Set response headers
     res.type('text/xml');
@@ -182,6 +187,8 @@ app.post('/voice', (req, res) => {
 wss.on('connection', (ws: WebSocket, req) => {
   console.log('[WebSocket] New connection established');
   console.log('[WebSocket] Remote address:', req.socket.remoteAddress);
+  console.log('[WebSocket] URL:', req.url);
+  console.log('[WebSocket] Ready state:', ws.readyState);
   
   try {
     // Handle the Twilio media stream

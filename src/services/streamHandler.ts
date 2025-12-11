@@ -169,14 +169,21 @@ export const handleStream = async (ws: WebSocket) => {
   // Handle WS messages from Twilio
   ws.on('message', (message: string) => {
     try {
-      const data = JSON.parse(message);
+      const msg = message.toString(); // Ensure it's a string
+      const data = JSON.parse(msg);
+      
+      // Log all events for debugging
+      if (data.event !== 'media') {
+        console.log('[Twilio] Received event:', data.event, JSON.stringify(data, null, 2));
+      }
       
       switch (data.event) {
         case 'connected':
-          console.log('Twilio Media Stream Connected');
+          console.log('[Twilio] Media Stream Connected');
           break;
         case 'start':
-          console.log('Media Stream Started:', data.streamSid);
+          console.log('[Twilio] Media Stream Started:', data.streamSid);
+          console.log('[Twilio] Start payload:', JSON.stringify(data.start, null, 2));
           streamSid = data.streamSid;
           // Try to send greetings when stream starts (if Deepgram is already open)
           sendGreetingsIfReady();
