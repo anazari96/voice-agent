@@ -10,7 +10,8 @@ const openai = new OpenAI({
 export const getAIResponse = async (
   conversationHistory: { role: 'system' | 'user' | 'assistant'; content: string }[],
   userMessage: string,
-  detectedLanguage: string | null = null
+  detectedLanguage: string | null = null,
+  abortSignal?: AbortSignal
 ) => {
   try {
     // Create messages array with language instruction if language is detected
@@ -77,10 +78,17 @@ export const getAIResponse = async (
       model: 'gpt-4o', // or gpt-3.5-turbo
       messages: messages,
       stream: false, // For simplicity in this demo, we'll wait for full text. For true realtime, use stream: true
+    }, {
+      signal: abortSignal // Support cancellation
     });
 
     return completion.choices[0]?.message?.content || "I'm sorry, I didn't catch that.";
-  } catch (error) {
+  } catch (error: any) {
+    // Check if request was aborted
+    if (error?.name === 'AbortError' || abortSignal?.aborted) {
+      console.log('[OpenAI] Request was aborted');
+      throw error; // Re-throw to be handled by caller
+    }
     console.error('Error getting OpenAI response:', error);
     return "I'm having trouble connecting to my brain right now.";
   }

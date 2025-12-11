@@ -69,7 +69,7 @@ export const validateElevenLabsApiKey = async (): Promise<boolean> => {
   }
 };
 
-export const textToSpeechStream = async (text: string, languageCode: string | null = null): Promise<NodeJS.ReadableStream | null> => {
+export const textToSpeechStream = async (text: string, languageCode: string | null = null, abortSignal?: AbortSignal): Promise<NodeJS.ReadableStream | null> => {
   if (!ELEVENLABS_API_KEY) {
     console.error('[ElevenLabs] API Key is missing. Please set ELEVENLABS_API_KEY in your .env file.');
     return null;
@@ -132,6 +132,12 @@ export const textToSpeechStream = async (text: string, languageCode: string | nu
       console.log('[ElevenLabs] Using language code:', iso639Code, 'with model:', modelId);
     }
 
+    // Check if already aborted
+    if (abortSignal?.aborted) {
+      console.log('[ElevenLabs] Request aborted before sending');
+      return null;
+    }
+
     // Now make the actual TTS stream request
     const response = await axios({
       method: 'POST',
@@ -145,14 +151,29 @@ export const textToSpeechStream = async (text: string, languageCode: string | nu
         'Content-Type': 'application/json'
       },
       responseType: 'stream',
-      timeout: 30000 // 30 second timeout for TTS generation
+      timeout: 30000, // 30 second timeout for TTS generation
+      signal: abortSignal // Support cancellation
     });
+
+    // Check if aborted after request
+    if (abortSignal?.aborted) {
+      console.log('[ElevenLabs] Request aborted after sending');
+      if (response.data && typeof (response.data as any).destroy === 'function') {
+        (response.data as any).destroy();
+      }
+      return null;
+    }
 
     console.log('[ElevenLabs] TTS stream started successfully');
     console.log('[ElevenLabs] Response status:', response.status);
     console.log('[ElevenLabs] Response content-type:', response.headers['content-type']);
     return response.data;
   } catch (error: any) {
+    // Check if request was aborted
+    if (error?.name === 'AbortError' || error?.code === 'ERR_CANCELED' || abortSignal?.aborted) {
+      console.log('[ElevenLabs] Request was aborted');
+      return null;
+    }
     // Handle axios errors
     if (error.response) {
       const status = error.response.status;

@@ -25,6 +25,8 @@ export const handleStream = (ws: WebSocket) => {
   let detectedLanguage: string | null = null; // Store detected language (BCP-47 code, e.g., 'en', 'es', 'fr')
   let isAgentSpeaking: boolean = false; // Track if agent is currently speaking
   let currentAudioStream: NodeJS.ReadableStream | null = null; // Reference to current audio stream for interruption
+  let shouldCancelResponse: boolean = false; // Flag to cancel ongoing response generation
+  let currentAbortController: AbortController | null = null; // AbortController for canceling requests
 
   // Function to convert ISO 639-3 language code (from franc) to ISO 639-1 (for APIs)
   const convertToISO6391 = (code6393: string): string | null => {
@@ -73,8 +75,19 @@ export const handleStream = (ws: WebSocket) => {
     endpointing: 300 // Wait 300ms of silence to trigger final
   });
 
-  // Function to stop current audio stream (for interruption)
+  // Function to stop current audio stream and cancel ongoing operations (for interruption)
   const stopCurrentAudio = () => {
+    // Set cancellation flag
+    shouldCancelResponse = true;
+    
+    // Cancel any ongoing HTTP requests
+    if (currentAbortController) {
+      console.log('[Interruption] Aborting ongoing requests');
+      currentAbortController.abort();
+      currentAbortController = null;
+    }
+    
+    // Stop current audio stream
     if (currentAudioStream && isAgentSpeaking) {
       console.log('[Interruption] Stopping current audio stream');
       try {
@@ -289,6 +302,20 @@ export const handleStream = (ws: WebSocket) => {
     if (transcript && data.is_final) {
       console.log('[User] Said:', transcript);
       
+      // Check if agent is currently speaking (interruption detection)
+      if (isAgentSpeaking) {
+        console.log('[Interruption] User interrupted agent while speaking');
+        stopCurrentAudio();
+      }
+      
+      // Create new AbortController for this response (but don't reset flag yet - it will be reset after we start processing)
+      // This allows us to cancel if user interrupts again during generation
+      const responseAbortController = new AbortController();
+      currentAbortController = responseAbortController;
+      
+      // Reset cancellation flag for new response (after stopping previous)
+      shouldCancelResponse = false;
+      
       // Detect language from transcript text (since detect_language is not supported for live streaming)
       const detectedLang = detectLanguageFromText(transcript);
       if (detectedLang) {
@@ -297,22 +324,73 @@ export const handleStream = (ws: WebSocket) => {
         console.log('[Language] Detected language:', detectedLanguage);
       }
       
-      // Check if agent is currently speaking (interruption detection)
-      if (isAgentSpeaking) {
-        console.log('[Interruption] User interrupted agent while speaking');
-        stopCurrentAudio();
+      // Check if cancelled before proceeding
+      if (shouldCancelResponse) {
+        console.log('[Interruption] Response cancelled before processing');
+        return;
       }
       
       // Add to history
       conversationHistory.push({ role: 'user', content: transcript });
 
       // Get AI Response (pass detected language to respond in same language)
-      const aiResponse = await getAIResponse(conversationHistory, transcript, detectedLanguage);
+      // Check for cancellation before and after the call
+      if (shouldCancelResponse) {
+        console.log('[Interruption] Response cancelled before AI generation');
+        return;
+      }
+      
+      let aiResponse: string;
+      try {
+        aiResponse = await getAIResponse(conversationHistory, transcript, detectedLanguage, responseAbortController.signal);
+      } catch (error: any) {
+        // If aborted, just return
+        if (error?.name === 'AbortError' || shouldCancelResponse) {
+          console.log('[Interruption] AI response generation was aborted');
+          return;
+        }
+        // For other errors, use fallback
+        aiResponse = "I'm having trouble connecting to my brain right now.";
+      }
+      
+      // Check if cancelled after AI response
+      if (shouldCancelResponse) {
+        console.log('[Interruption] Response cancelled after AI generation, not sending TTS');
+        return;
+      }
+      
       console.log('[AI] Response:', aiResponse);
       conversationHistory.push({ role: 'assistant', content: aiResponse });
 
+      // Check if cancelled before TTS
+      if (shouldCancelResponse) {
+        console.log('[Interruption] Response cancelled before TTS generation');
+        return;
+      }
+
       // TTS and Stream back (pass detected language for proper pronunciation)
-      const audioStream = await textToSpeechStream(aiResponse, detectedLanguage);
+      let audioStream: NodeJS.ReadableStream | null = null;
+      try {
+        audioStream = await textToSpeechStream(aiResponse, detectedLanguage, responseAbortController.signal);
+      } catch (error: any) {
+        // If aborted, just return
+        if (error?.name === 'AbortError' || error?.code === 'ERR_CANCELED' || shouldCancelResponse) {
+          console.log('[Interruption] TTS generation was aborted');
+          return;
+        }
+        console.error('[TTS] Error generating audio:', error);
+        return;
+      }
+      
+      // Check if cancelled after TTS generation
+      if (shouldCancelResponse || !audioStream) {
+        console.log('[Interruption] Response cancelled after TTS generation, not sending audio');
+        if (audioStream && typeof (audioStream as any).destroy === 'function') {
+          (audioStream as any).destroy();
+        }
+        return;
+      }
+      
       sendAudioToStream(audioStream);
     }
   });
@@ -336,6 +414,8 @@ export const handleStream = (ws: WebSocket) => {
       businessContext = `You are a helpful AI assistant for ${businessName}. 
       Business Description: ${description}.
       Available Products: ${productList}.
+      Hours: ${businessInfo?.hours}
+      Contact Info: ${businessInfo.contact_info}
       Keep responses concise and conversational.`;
       
       conversationHistory.push({ role: 'system', content: businessContext });
