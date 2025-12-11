@@ -15,7 +15,7 @@ export const getProducts = async () => {
 
   try {
     const response = await axios.get(
-      `${CLOVER_API_URL}/v3/merchants/${CLOVER_MERCHANT_ID}/items`,
+      `${CLOVER_API_URL}/merchants/${CLOVER_MERCHANT_ID}/items`,
       {
         headers: {
           'Authorization': `Bearer ${CLOVER_API_KEY}`,
