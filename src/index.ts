@@ -104,7 +104,16 @@ server.on('upgrade', (request, socket, head) => {
   }
 });
 
-// Middleware
+// Middleware - Skip for WebSocket upgrade requests
+app.use((req, res, next) => {
+  // Skip all Express middleware for WebSocket upgrade requests
+  // These are handled by server.on('upgrade')
+  if (req.headers.upgrade?.toLowerCase() === 'websocket') {
+    return; // Don't call next() - let the upgrade handler take over
+  }
+  next();
+});
+
 app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -121,16 +130,8 @@ app.get('/', (req, res) => {
 
 // Handle GET requests to /streams (for debugging/monitoring)
 // Note: WebSocket upgrade requests are handled by server.on('upgrade') above
-// This only handles plain HTTP GET requests
+// and are filtered out by the early middleware check
 app.get('/streams', (req, res) => {
-  // Check if this is actually a WebSocket upgrade request
-  // (it shouldn't be, as those are handled by the upgrade handler)
-  if (req.headers.upgrade === 'websocket') {
-    // This shouldn't happen, but if it does, let the upgrade handler deal with it
-    // by not sending a response here
-    return;
-  }
-  
   // Plain GET request - return status info
   res.json({
     endpoint: '/streams',
