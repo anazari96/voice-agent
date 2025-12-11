@@ -14,11 +14,12 @@ const server = createServer(app);
 // Use noServer mode to handle upgrades manually
 const wss = new WebSocketServer({ noServer: true });
 
-// CRITICAL: Register upgrade handler BEFORE Express routes
-// This ensures WebSocket upgrades are handled before Express tries to process them
+// CRITICAL: Register upgrade handler - this fires BEFORE Express middleware
 server.on('upgrade', (request, socket, head) => {
-  console.log('Received upgrade request:', request.url);
-  console.log('Request headers:', JSON.stringify(request.headers, null, 2));
+  console.log('=== UPGRADE REQUEST ===');
+  console.log('URL:', request.url);
+  console.log('Method:', request.method);
+  console.log('Upgrade header:', request.headers.upgrade);
   
   // Parse URL - handle both with and without query parameters
   let pathname = '/';
@@ -37,10 +38,16 @@ server.on('upgrade', (request, socket, head) => {
 
   if (pathname === '/streams') {
     console.log('Handling WebSocket upgrade for /streams');
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      console.log('WebSocket upgrade successful');
-      wss.emit('connection', ws, request);
-    });
+    try {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        console.log('WebSocket upgrade successful - connection established');
+        wss.emit('connection', ws, request);
+      });
+    } catch (error) {
+      console.error('Error handling upgrade:', error);
+      socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n');
+      socket.destroy();
+    }
   } else {
     console.log('Invalid upgrade path:', pathname);
     socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
@@ -52,10 +59,7 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// Explicitly prevent Express from handling /streams as HTTP route
-app.all('/streams', (req, res) => {
-  res.status(426).send('Upgrade Required'); // 426 Upgrade Required
-});
+// DO NOT add Express route for /streams - WebSocket upgrades are handled by server.on('upgrade')
 
 // Health check
 app.get('/', (req, res) => {
